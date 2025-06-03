@@ -1,0 +1,337 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+// Display configuration
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+#define SCREEN_ADDRESS 0x3C
+
+// Joystick pins
+#define JOYSTICK_X_PIN 34  // VRx pin
+#define JOYSTICK_Y_PIN 35  // VRy pin
+#define JOYSTICK_SW_PIN 15 // SW pin (optional button)
+
+// LED pins
+#define RED_LED 14
+#define BLUE_LED 12
+
+// Game constants
+#define SNAKE_SIZE 128     // Maximum snake length
+#define GRID_WIDTH 16      // Game grid width
+#define GRID_HEIGHT 8      // Game grid height
+#define BLOCK_SIZE 8       // Size of each grid block in pixels
+#define GAME_SPEED 150     // Game speed in milliseconds
+
+// Direction constants
+enum Direction {
+  UP,
+  RIGHT,
+  DOWN,
+  LEFT
+};
+
+// Game state variables
+int snakeX[SNAKE_SIZE];
+int snakeY[SNAKE_SIZE];
+int snakeLength = 3;
+int foodX, foodY;
+Direction direction = RIGHT;
+bool gameOver = false;
+int score = 0;
+
+// Display object
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// Forward declarations
+void placeFood();
+void readJoystick();
+void updateGame();
+void renderGame();
+
+// Task handles
+TaskHandle_t gameTaskHandle = NULL;
+TaskHandle_t inputTaskHandle = NULL;
+
+// Game task - updates game state and renders
+void gameTask(void *pvParameters) {
+  // Initialize snake position (starts with length 3)
+  for (int i = 0; i < snakeLength; i++) {
+    snakeX[i] = (GRID_WIDTH / 2) - i;
+    snakeY[i] = GRID_HEIGHT / 2;
+  }
+  
+  // Place initial food
+  placeFood();
+  
+  while (1) {
+    if (!gameOver) {
+      // Red LED blinks for the snake's head - makes it more visible
+      digitalWrite(RED_LED, HIGH);
+      updateGame();
+      renderGame();
+      digitalWrite(RED_LED, LOW);
+    } else {
+      // Game over - Red LED stays on
+      digitalWrite(RED_LED, HIGH);
+      digitalWrite(BLUE_LED, LOW);
+      
+      // Display game over screen
+      display.clearDisplay();
+      display.setTextSize(1);
+      display.setTextColor(SSD1306_WHITE);
+      display.setCursor(20, 20);
+      display.print("GAME OVER!");
+      display.setCursor(20, 30);
+      display.print("Score: ");
+      display.print(score);
+      display.setCursor(12, 45);
+      display.print("Press SW to restart");
+      display.display();
+      
+      // Check for button press to restart
+      if (digitalRead(JOYSTICK_SW_PIN) == LOW) {
+        // Reset game and LEDs
+        digitalWrite(RED_LED, LOW);
+        
+        gameOver = false;
+        score = 0;
+        snakeLength = 3;
+        direction = RIGHT;
+        for (int i = 0; i < snakeLength; i++) {
+          snakeX[i] = (GRID_WIDTH / 2) - i;
+          snakeY[i] = GRID_HEIGHT / 2;
+        }
+        placeFood();
+        delay(300); // Debounce
+      }
+    }
+    
+    vTaskDelay(GAME_SPEED / portTICK_PERIOD_MS);
+  }
+}
+
+// Input task - reads joystick values
+void inputTask(void *pvParameters) {
+  while (1) {
+    readJoystick();
+    vTaskDelay(50 / portTICK_PERIOD_MS);
+  }
+}
+
+void setup() {
+  // Initialize serial communication
+  Serial.begin(115200);
+  
+  // Initialize LEDs
+  pinMode(RED_LED, OUTPUT);
+  pinMode(BLUE_LED, OUTPUT);
+  
+  // Turn on blue LED for welcome screen
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(BLUE_LED, HIGH);
+  
+  // Initialize display
+  if (!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for (;;); // Don't proceed, loop forever
+  }
+  
+  // Initialize joystick pins
+  pinMode(JOYSTICK_X_PIN, INPUT);
+  pinMode(JOYSTICK_Y_PIN, INPUT);
+  pinMode(JOYSTICK_SW_PIN, INPUT_PULLUP);
+  
+  // Welcome screen
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(25, 10);
+  display.println("SNAKE GAME");
+  display.setCursor(10, 30);
+  display.println("Use joystick to play");
+  display.setCursor(10, 45);
+  display.println("Press SW to start");
+  display.display();
+  
+  // Wait for button press to start
+  while (digitalRead(JOYSTICK_SW_PIN) != LOW) {
+    delay(50);
+  }
+  delay(300); // Debounce
+  
+  // Turn off blue LED when game starts
+  digitalWrite(BLUE_LED, LOW);
+  
+  // Create tasks
+  xTaskCreate(
+    gameTask,
+    "GameTask",
+    4096,
+    NULL,
+    1,
+    &gameTaskHandle
+  );
+  
+  xTaskCreate(
+    inputTask,
+    "InputTask",
+    2048,
+    NULL,
+    2, // Higher priority for input
+    &inputTaskHandle
+  );
+}
+
+void loop() {
+  // Empty, as FreeRTOS tasks handle everything
+  vTaskDelay(1000 / portTICK_PERIOD_MS);
+}
+
+// Place food at random position
+void placeFood() {
+  bool validPosition = false;
+  
+  while (!validPosition) {
+    validPosition = true;
+    // Generate random position
+    foodX = random(0, GRID_WIDTH);
+    foodY = random(0, GRID_HEIGHT);
+    
+    // Check if food is not on snake
+    for (int i = 0; i < snakeLength; i++) {
+      if (snakeX[i] == foodX && snakeY[i] == foodY) {
+        validPosition = false;
+        break;
+      }
+    }
+  }
+}
+
+// Read joystick and update direction
+void readJoystick() {
+  int x = analogRead(JOYSTICK_X_PIN);
+  int y = analogRead(JOYSTICK_Y_PIN);
+  
+  // Convert analog readings to direction
+  // Assuming middle position is around 2048 (ESP32 has 12-bit ADC)
+  
+  // Prevent 180-degree turns (can't go directly opposite current direction)
+  Direction newDirection = direction;
+  
+  if (y < 1000 && direction != DOWN) {
+    newDirection = UP;
+  } else if (y > 3000 && direction != UP) {
+    newDirection = DOWN;
+  } else if (x < 1000 && direction != RIGHT) {
+    newDirection = LEFT;
+  } else if (x > 3000 && direction != LEFT) {
+    newDirection = RIGHT;
+  }
+  
+  direction = newDirection;
+}
+
+// Update game state
+// Update game state
+void updateGame() {
+  // Store previous tail position for growing
+  int prevTailX = snakeX[snakeLength - 1];
+  int prevTailY = snakeY[snakeLength - 1];
+  
+  // Move snake body (shift all segments)
+  for (int i = snakeLength - 1; i > 0; i--) {
+    snakeX[i] = snakeX[i - 1];
+    snakeY[i] = snakeY[i - 1];
+  }
+  
+  // Move snake head according to direction
+  switch (direction) {
+    case UP:
+      snakeY[0]--;
+      break;
+    case RIGHT:
+      snakeX[0]++;
+      break;
+    case DOWN:
+      snakeY[0]++;
+      break;
+    case LEFT:
+      snakeX[0]--;
+      break;
+  }
+  
+  // Wrap around screen edges
+  if (snakeX[0] < 0) snakeX[0] = GRID_WIDTH - 1;
+  if (snakeX[0] >= GRID_WIDTH) snakeX[0] = 0;
+  if (snakeY[0] < 0) snakeY[0] = GRID_HEIGHT - 1;
+  if (snakeY[0] >= GRID_HEIGHT) snakeY[0] = 0;
+  
+  // Check self-collision
+  for (int i = 1; i < snakeLength; i++) {
+    if (snakeX[0] == snakeX[i] && snakeY[0] == snakeY[i]) {
+      gameOver = true;
+      return;
+    }
+  }
+  
+  // Check food collision
+  if (snakeX[0] == foodX && snakeY[0] == foodY) {
+    // Flash blue LED when food is eaten
+    digitalWrite(BLUE_LED, HIGH);
+    delay(50);
+    digitalWrite(BLUE_LED, LOW);
+    
+    // Grow snake
+    if (snakeLength < SNAKE_SIZE) {
+      snakeX[snakeLength] = prevTailX;
+      snakeY[snakeLength] = prevTailY;
+      snakeLength++;
+      score++;
+    }
+    
+    // Place new food
+    placeFood();
+  }
+}
+
+// Render current game state to display
+void renderGame() {
+  display.clearDisplay();
+  
+  // Draw border
+  display.drawRect(0, 0, GRID_WIDTH * BLOCK_SIZE, GRID_HEIGHT * BLOCK_SIZE, SSD1306_WHITE);
+  
+  // Draw snake
+  for (int i = 0; i < snakeLength; i++) {
+    display.fillRect(
+      snakeX[i] * BLOCK_SIZE,
+      snakeY[i] * BLOCK_SIZE,
+      BLOCK_SIZE,
+      BLOCK_SIZE,
+      SSD1306_WHITE
+    );
+  }
+  
+  // Draw food
+  display.fillRect(
+    foodX * BLOCK_SIZE,
+    foodY * BLOCK_SIZE,
+    BLOCK_SIZE,
+    BLOCK_SIZE,
+    SSD1306_WHITE
+  );
+  
+  // Draw score
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, SCREEN_HEIGHT - 8);
+  display.print("Score: ");
+  display.print(score);
+  
+  display.display();
+}

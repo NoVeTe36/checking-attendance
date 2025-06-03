@@ -1,0 +1,135 @@
+#include <Arduino.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define RED_LED 14   // Red LED on pin 14
+#define GREEN_LED 12  // Green LED on pin 12 (replacing GREEN_LED)
+
+#define SCREEN_WIDTH 128     // OLED display width, in pixels
+#define SCREEN_HEIGHT 64     // OLED display height, in pixels
+#define OLED_RESET -1        // Reset pin # (or -1 if sharing Arduino reset pin)
+#define SCREEN_ADDRESS 0x3C  // I2C address (typically 0x3C or 0x3D)
+
+// Display object
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+// Traffic light timing (in milliseconds)
+const int GREEN_DURATION = 5000;  // Green light duration: 5 seconds
+const int RED_DURATION = 7000;    // Red light duration: 7 seconds
+
+// Task handles
+TaskHandle_t TrafficLightTaskHandle = NULL;
+TaskHandle_t DisplayTaskHandle = NULL;
+
+// Shared variable for countdown display
+volatile int currentCountdown = 0;
+volatile bool isGreenLight = false;
+
+// Task for controlling traffic light
+void TrafficLightTask(void *pvParameters) {
+  while (1) {
+    // Green light phase
+    digitalWrite(GREEN_LED, HIGH);
+    digitalWrite(RED_LED, LOW);
+    isGreenLight = true;
+    currentCountdown = GREEN_DURATION / 1000;
+    
+    Serial.println("GREEN LIGHT ON");
+    for (int i = 0; i < GREEN_DURATION; i += 1000) {
+      vTaskDelay(1000 / portTICK_PERIOD_MS);
+      if (currentCountdown > 0) currentCountdown--;
+    }
+    
+    // Red light phase
+    digitalWrite(GREEN_LED, LOW);
+    digitalWrite(RED_LED, HIGH);
+    isGreenLight = false;
+    currentCountdown = RED_DURATION / 1000;
+    
+    Serial.println("RED LIGHT ON");
+    for (int i = 0; i < RED_DURATION; i += 1000) {
+      vTaskDelay(1000 / portTICK_PERIOD_MS);
+      if (currentCountdown > 0) currentCountdown--;
+    }
+  }
+}
+
+// Task for updating the display
+void DisplayTask(void *pvParameters) {
+  while (1) {
+    display.clearDisplay();
+    display.setTextSize(1);
+    display.setTextColor(SSD1306_WHITE);
+    
+    // Show which light is active
+    display.setCursor(0, 0);
+    if (isGreenLight) {
+      display.println("GREEN Viet Tung Buoi");
+    } else {
+      display.println("RED Thanh Tung Buoi");
+    }
+    
+    // Show countdown timer
+    display.setTextSize(3);
+    display.setCursor(40, 30);
+    display.print(currentCountdown);
+    display.println("s");
+    
+    display.display();
+    vTaskDelay(100 / portTICK_PERIOD_MS);  // Update display frequently
+  }
+}
+
+void setup() {
+  // Initialize LED pins
+  pinMode(RED_LED, OUTPUT);
+  pinMode(GREEN_LED, OUTPUT);
+  
+  // Initialize serial communication
+  Serial.begin(921600);
+  Serial.println("Starting traffic light system");
+  
+  // Initialize SSD1306 display
+  if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
+    Serial.println(F("SSD1306 allocation failed"));
+    for(;;); // Don't proceed, loop forever
+  }
+  
+  // Initial display setup
+  display.clearDisplay();
+  display.setTextColor(SSD1306_WHITE);
+  display.setTextSize(2);
+  display.setCursor(0, 0);
+  display.println("Traffic");
+  display.println("Light");
+  display.println("System");
+  display.display();
+  delay(2000); // Show splash screen
+  
+  // Create tasks
+  xTaskCreate(
+    TrafficLightTask,        // Function that implements the task
+    "TrafficLightTask",      // Task name
+    2048,                    // Stack size (bytes)
+    NULL,                    // Parameter to pass
+    1,                       // Task priority
+    &TrafficLightTaskHandle  // Task handle
+  );
+  
+  xTaskCreate(
+    DisplayTask,             // Function that implements the task
+    "DisplayTask",           // Task name
+    4096,                    // Stack size (bytes, larger for display operations)
+    NULL,                    // Parameter to pass
+    1,                       // Task priority
+    &DisplayTaskHandle       // Task handle
+  );
+}
+
+void loop() {
+  // Empty as tasks handle the work now
+  vTaskDelay(1000 / portTICK_PERIOD_MS);
+}

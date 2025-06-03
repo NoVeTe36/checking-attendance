@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dinosaur Game - ESP32</title>
+    <link rel="stylesheet" href="game.css">
+</head>
+<body>
+    <div class="game-container">
+        <div class="game-header">
+            <h1>Dinosaur Game</h1>
+            <div class="score">Score: <span id="score">0</span></div>
+        </div>
+        <canvas id="gameCanvas" width="800" height="200"></canvas>
+        <div class="game-controls">
+            <p>Press SPACE or click to jump!</p>
+            <button id="startBtn">Start Game</button>
+            <button id="resetBtn">Reset</button>
+        </div>
+        <div class="game-over" id="gameOver" style="display: none;">
+            <h2>Game Over!</h2>
+            <p>Final Score: <span id="finalScore">0</span></p>
+            <button onclick="resetGame()">Play Again</button>
+        </div>
+    </div>
+    <script src="game.js"></script>
+</body>
+</html>

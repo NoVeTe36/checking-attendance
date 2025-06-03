@@ -1,0 +1,12 @@
+{
+    "platformio-ide.useDevelopmentPIOCore": true,
+    "platformio-ide.customPATH": "C:/Users/acer/.platformio/penv/Scripts",
+    "files.associations": {
+        "*.embeddedhtml": "html",
+        "*.old": "cpp",
+        "gpio_sig_map.h": "c",
+        "array": "cpp",
+        "string": "cpp",
+        "string_view": "cpp"
+    },
+}
