@@ -8,16 +8,26 @@ cursor = conn.cursor()
 cursor.execute("DROP TABLE IF EXISTS CheckinHistory")
 cursor.execute("DROP TABLE IF EXISTS Employees")
 cursor.execute("DROP TABLE IF EXISTS Sessions")
+cursor.execute("DROP TABLE IF EXISTS cert")
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS Employees (
     EmployeeID INTEGER PRIMARY KEY AUTOINCREMENT,
     Name TEXT NOT NULL,
-    Role TEXT NOT NULL,
-    FirstTime BOOLEAN DEFAULT 1,
-    Token TEXT UNIQUE NOT NULL
+    Role TEXT NOT NULL
 );
 """)
+
+cursor.execute("""
+create table if not exists cert (
+    id varchar(6),
+    pub_key varchar(130),
+    valid_until datetime,
+    token varchar(6),
+    issued integer,
+    EmployeeID integer
+);
+ """)
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS CheckinHistory (
@@ -45,27 +55,27 @@ CREATE TABLE IF NOT EXISTS Sessions (
 """)
 
 cursor.execute("""
-INSERT INTO Employees (Name, Role, Token) VALUES
-('Emily Johnson', 'Cashier', 'A7X9K2L1M4PQZ8RW'),
-('Michael Smith', 'Supervisor', 'L0Y3Z9KP2X7MWT5Q'),
-('Sarah Miller', 'Cashier', 'Q1M7Z5K9Y3L2TXRW'),
-('David Brown', 'Supervisor', 'Z8R2K1M4Y7PWTQX9'),
-('Ashley Davis', 'Cashier', 'M6Q9Y4X1PTKZ73WL'),
-('James Wilson', 'Supervisor', 'T0KPZ4X7Y3MWL9QR'),
-('Jessica Moore', 'Cashier', 'W1X8LY3K2P9ZTQRM'),
-('John Taylor', 'Supervisor', 'K9MQ2WT7Y4LXPZ13'),
-('Amanda Anderson', 'Cashier', 'R3ZQKWT9M1Y84XPL'),
-('Robert Thomas', 'Supervisor', 'Y7M2PLQKX9W3ZT01'),
-('Jennifer Jackson', 'Cashier', 'X1Y9K4ZQM7TPLW28'),
-('William White', 'Supervisor', 'PQXW7K3MLYZT0192'),
-('Elizabeth Harris', 'Cashier', 'M4T8PQZLYK193XW7'),
-('Christopher Martin', 'Supervisor', 'ZT0KLYW9P3XQ728M'),
-('Patricia Thompson', 'Cashier', 'Y2MZXLPTQW379K1R'),
-('Joshua Garcia', 'Supervisor', 'LWXTKY37M0QPZ149'),
-('Linda Martinez', 'Cashier', 'QZ9WPT3XK7YML240'),
-('Daniel Robinson', 'Supervisor', 'KM1LYZXPW473TQ98'),
-('Barbara Clark', 'Cashier', '3M9KWLXYTQZP7182'),
-('Matthew Rodriguez', 'Supervisor', 'ZKTW8PQ1XLYM9340');
+INSERT INTO Employees (Name, Role) VALUES
+('Emily Johnson', 'Cashier'),
+('Michael Smith', 'Supervisor'),
+('Sarah Miller', 'Cashier'),
+('David Brown', 'Supervisor'),
+('Ashley Davis', 'Cashier'),
+('James Wilson', 'Supervisor'),
+('Jessica Moore', 'Cashier'),
+('John Taylor', 'Supervisor'),
+('Amanda Anderson', 'Cashier'),
+('Robert Thomas', 'Supervisor'),
+('Jennifer Jackson', 'Cashier'),
+('William White', 'Supervisor'),
+('Elizabeth Harris', 'Cashier'),
+('Christopher Martin', 'Supervisor'),
+('Patricia Thompson', 'Cashier'),
+('Joshua Garcia', 'Supervisor'),
+('Linda Martinez', 'Cashier'),
+('Daniel Robinson', 'Supervisor'),
+('Barbara Clark', 'Cashier'),
+('Matthew Rodriguez', 'Supervisor');
 """)
 
 conn.commit()

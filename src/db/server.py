@@ -2,141 +2,69 @@ from flask import Flask, request, jsonify
 import sqlite3
 from datetime import datetime, date
 import json
+import ecdsa
+import ecdh_aes
 
 app = Flask(__name__)
 DB_PATH = 'attendance.db'
+
+# Load the ca private key for signing cert
+with open("ca.pem", "rb") as f:
+    ca_private_key, ca_public_key = ecdsa.load_private_key(f.read())
+ca_public_bytes = ecdsa.get_public_bytes(ca_public_key)
 
 def get_db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
+
 @app.route('/checkin', methods=['POST'])
 def checkin():
     try:
         data = request.get_json()
-        name = data.get('Name')
-        token = data.get('token')
+        cert_id = data.get("cert_id")
+
         session_id = data.get('session_id', 1)  # Default to session 1
         
-        print(f"Received check-in request - Name: {name}, Token: {token}")
-        
-        # Must have either name or token, but not both
-        if not name and not token:
-            return jsonify({'error': 'Missing name or token'}), 400
-        
-        if name and token:
-            return jsonify({'error': 'Provide either name or token, not both'}), 400
-
         conn = get_db_connection()
         cursor = conn.cursor()
+        # Look up employee by token
+        cursor.execute("SELECT Employees.EmployeeID, Name FROM cert INNER JOIN Employees ON cert.EmployeeID = Employees.EmployeeID where cert.id = ?", (cert_id,))
+        employee = cursor.fetchone()
 
-        # CASE 1: First-time login with name
-        if name:
-            print(f"Processing first-time login for name: {name}")
-            
-            # Look up employee by name
-            cursor.execute("SELECT EmployeeID, Name, Token, FirstTime FROM Employees WHERE Name = ?", (name,))
-            employee = cursor.fetchone()
+        if not employee:
+            conn.close()
+            print(f"Invalid token: {token}")
+            return jsonify({
+                'success': False,
+                'message': 'Invalid token'
+            }), 401
 
-            if not employee:
-                conn.close()
-                print(f"Employee not found: {name}")
-                return jsonify({
-                    'success': False,
-                    'message': 'Employee not found'
-                }), 404
+        employee_id = employee['EmployeeID']
+        employee_name = employee['Name']
+        
+        print(f"Found employee: {employee_name} (ID: {employee_id})")
 
-            employee_id = employee['EmployeeID']
-            employee_name = employee['Name']
-            employee_token = employee['Token']
-            first_time = employee['FirstTime']
-            
-            print(f"Found employee: {employee_name} (ID: {employee_id}, FirstTime: {first_time})")
-
-            # Check if this is actually their first time
-            if not first_time:
-                conn.close()
-                print(f"Employee {employee_name} has already completed first-time setup")
-                return jsonify({
-                    'success': False,
-                    'message': 'Employee already registered. Use token for check-in.'
-                }), 401
-
-            # Update FirstTime to 0 (false)
-            cursor.execute("UPDATE Employees SET FirstTime = 0 WHERE EmployeeID = ?", (employee_id,))
-            
-            # Process check-in for first time
-            success = process_checkin(cursor, employee_id, session_id)
-            
-            if success:
-                conn.commit()
-                conn.close()
-                print(f"First-time setup successful for {employee_name}")
-                return jsonify({
-                    'success': True,
-                    'message': f'Welcome {employee_name}! First-time setup complete.',
-                    'token': employee_token,
-                    'employee_name': employee_name
-                }), 200
-            else:
-                conn.rollback()
-                conn.close()
-                return jsonify({
-                    'success': False,
-                    'message': 'Check-in processing failed'
-                }), 500
-
-        # CASE 2: Regular check-in with token
-        elif token:
-            print(f"Processing token-based check-in for token: {token}")
-            
-            # Look up employee by token
-            cursor.execute("SELECT EmployeeID, Name, FirstTime FROM Employees WHERE Token = ?", (token,))
-            employee = cursor.fetchone()
-
-            if not employee:
-                conn.close()
-                print(f"Invalid token: {token}")
-                return jsonify({
-                    'success': False,
-                    'message': 'Invalid token'
-                }), 401
-
-            employee_id = employee['EmployeeID']
-            employee_name = employee['Name']
-            first_time = employee['FirstTime']
-            
-            print(f"Found employee: {employee_name} (ID: {employee_id})")
-
-            # Check if they need to do first-time setup
-            if first_time:
-                conn.close()
-                print(f"Employee {employee_name} needs to complete first-time setup with name")
-                return jsonify({
-                    'success': False,
-                    'message': 'Please complete first-time setup using your name'
-                }), 401
-
-            # Process regular check-in
-            success = process_checkin(cursor, employee_id, session_id)
-            
-            if success:
-                conn.commit()
-                conn.close()
-                print(f"Check-in successful for {employee_name}")
-                return jsonify({
-                    'success': True,
-                    'message': f'Welcome back {employee_name}!',
-                    'employee_name': employee_name
-                }), 200
-            else:
-                conn.rollback()
-                conn.close()
-                return jsonify({
-                    'success': False,
-                    'message': 'Check-in processing failed'
-                }), 500
+        # Process regular check-in
+        success = process_checkin(cursor, employee_id, session_id)
+        
+        if success:
+            conn.commit()
+            conn.close()
+            print(f"Check-in successful for {employee_name}")
+            return jsonify({
+                'success': True,
+                'message': f'Welcome back {employee_name}!',
+                'employee_name': employee_name
+            }), 200
+        else:
+            conn.rollback()
+            conn.close()
+            return jsonify({
+                'success': False,
+                'message': 'Check-in processing failed'
+            }), 500
 
     except Exception as e:
         print(f"Error processing check-in: {str(e)}")
@@ -214,8 +142,7 @@ def get_employees():
         result.append({
             'id': emp['EmployeeID'],
             'name': emp['Name'],
-            'token': emp['Token'],
-            'first_time': bool(emp['FirstTime'])
+            'role': emp['Role'],
         })
     
     return jsonify(result)
@@ -247,20 +174,56 @@ def get_history():
     
     return jsonify(result)
 
-@app.route('/reset_employee/<name>', methods=['POST'])
-def reset_employee_first_time(name):
-    """Debug endpoint to reset an employee's FirstTime flag"""
+@app.route('/sign_cert', methods=['POST'])
+def sign_cert():
+    data = request.get_json()
+    token = data.get("token")
+    id = data.get("id")
+    pub_key = data.get("pub_key")
+
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("UPDATE Employees SET FirstTime = 1 WHERE Name = ?", (name,))
+    cursor.execute("""
+        SELECT id, pub_key, valid_until, token, issued 
+        FROM cert
+        where id = ?
+    """, (id,))
+    user = cursor.fetchone()
+
+    if user is None:
+        print(f"not found user {id}")
+        return jsonify({
+            "success": False,
+            }), 303
+
+    target_token = user["token"]
+    issued = user["issued"]
+
+    if target_token != token or issued == 1:
+        print(f"cannot sign cert invalid info")
+        return jsonify({
+            "success": False,
+            }), 303
+
     
-    if cursor.rowcount > 0:
-        conn.commit()
-        conn.close()
-        return jsonify({'message': f'Reset FirstTime flag for {name}'}), 200
-    else:
-        conn.close()
-        return jsonify({'message': f'Employee {name} not found'}), 404
+    valid_until = datetime.now(timezone.utc)
+    cursor.execute("update cert set issued = 1, pub_key = ?, valid_until = ?", (pub_key, valid_until))
+    conn.commit()
+    conn.close()
+
+    valid_until_string = valid_until.strftime("%Y-%m-%d %H:%M:%S")
+    cert_bytes = ecdsa.cert_bytes(id, bytes.fromhex(pub_key), valid_until_string)
+    print(cert_data_bytes)
+    
+    signature = ecdsa.sign(ca_private_key, cert_data_bytes)
+    
+
+    return jsonify({
+        'success': True,
+        'valid_until': valid_until_string,
+        'signature': signature.hex().upper(),
+        'ca_pub': ca_public_bytes.hex().upper()
+    }), 200
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
