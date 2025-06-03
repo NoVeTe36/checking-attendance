@@ -1,6 +1,6 @@
 from flask import Flask, request, jsonify
 import sqlite3
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 import json
 import ecdsa
 import ecdh_aes
@@ -213,9 +213,9 @@ def sign_cert():
 
     valid_until_string = valid_until.strftime("%Y-%m-%d %H:%M:%S")
     cert_bytes = ecdsa.cert_bytes(id, bytes.fromhex(pub_key), valid_until_string)
-    print(cert_data_bytes)
+    print(cert_bytes)
     
-    signature = ecdsa.sign(ca_private_key, cert_data_bytes)
+    signature = ecdsa.sign(ca_private_key, cert_bytes)
     
 
     return jsonify({
