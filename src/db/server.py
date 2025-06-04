@@ -19,6 +19,15 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+@app.route('/')
+def home():
+    try:
+        print("Home route accessed")
+        print(f"Template folder: {app.template_folder}")
+        return render_template('web.html')
+    except Exception as e:
+        print(f"Error rendering template: {e}")
+        return f"Template error: {str(e)}", 500
 
 @app.route('/checkin', methods=['POST'])
 def checkin():
@@ -327,12 +336,6 @@ def daily_trend():
         'late_counts': late_counts,
         'absent_counts': absent_counts
     })
-
-
-@app.route('/')
-def home():
-    return render_template('web.html')
-
 
 def add_test_data():
     conn = get_db_connection()
