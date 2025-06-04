@@ -10,22 +10,16 @@
 
 WebServer server(80);
 mbedtls_ecdsa_context server_ecdsa_ctx;
-mbedtls_ecdh_context server_ecdh_ctx;
+String pub_key_hex;
+String id = "000002";
+String token = "123456";
 
-struct CertInfo
-{
-    String id;
-    String ecdsa_public_key_b64;
-    uint64_t valid;
-    String signature_b64;
-    String c_nonce_b64;
-    String session_ecdh_public_key_b64;
-    String nonce_b64;
-    String ciphertext_b64;
-    String tag_b64;
-};
+String server_valid_until;
+String server_cert_signature;
+String ca_pub;
 
-std::map<String, CertInfo> deviceCerts;
+
+std::map<String, mbedtls_ecdh_context> sessions_ecdh;
 
 const char *client_pubkey_hex = "048A602EE430C7EB3D5E68FAF4AFC2614DCE42292EAAF764BCEE66CD542EE2B396A283D11BE4E8F4035887942E4F732F6036A0CDCA5E820EB999BCEACA0E7487FD";
 
@@ -58,180 +52,185 @@ void get_valid_time_string(char *buf, size_t buf_len)
     snprintf(buf, buf_len, "20230604120045%03lu", ms % 1000);
 }
 
-void gen_server_ecdsa_key()
+void esp32_sigup()
 {
-    mbedtls_ecdsa_init(&server_ecdsa_ctx);
-    mbedtls_ecp_group_load(&server_ecdsa_ctx.grp, MBEDTLS_ECP_DP_SECP256R1);
-    int ret = mbedtls_ecp_gen_keypair(&server_ecdsa_ctx.grp, &server_ecdsa_ctx.d, &server_ecdsa_ctx.Q,
-                                      mbedtls_ctr_drbg_random, &ctr_drbg);
-    if (ret != 0)
+    gen_signature_key(server_ecdsa_ctx);
+
+    uint8_t pub_key[65];
+    get_public_bytes(server_ecdsa_ctx, pub_key);
+    pub_key_hex = bytesToHex(pub_key, 65);
+
+    String postData = "{\"id\": \"" + id "\", \"token\": \"" + token + "\", \"pub_key\": \""
+    + pub_key_hex + "\"}";
+
+    HTTPClient http;
+    http.begin("http://192.168.86.64:5000/sing_cert");                              // Specify the URL
+    http.addHeader("Content-Type", "application/json"); // Specify content-type header
+
+    int httpResponseCode = http.POST(postData);
+    if (httpResponseCode == 200)
     {
-        Serial.printf("Failed to generate ECDSA keypair: -0x%04X\n", -ret);
-        while (1)
-            ;
+        String response = http.getString(); // Get the response payload
+        Serial.println("Response: " + response);
+        DynamicJsonDocument doc(1024);
+        DeserializationError error = deserializeJson(doc, response);
+        if (error)
+        {
+            Serial.println("Failed to parse JSON response");
+            return;
+        }
+        server_valid_until = doc["valid_until"];
+        ca_pub = doc["ca_pub"];
+        server_cert_signature = doc["signature"];
+    }
+    else
+    {
+        Serial.printf("Error on sending POST: %s\n", http.errorToString(httpResponseCode).c_str());
     }
 }
 
-void generate_server_ecdh_keypair()
-{
-    mbedtls_ecdh_init(&server_ecdh_ctx);
-    mbedtls_ecp_group_load(&server_ecdh_ctx.grp, MBEDTLS_ECP_DP_SECP256R1);
-    int ret = mbedtls_ecdh_gen_public(&server_ecdh_ctx.grp, &server_ecdh_ctx.d, &server_ecdh_ctx.Q,
-                                      mbedtls_ctr_drbg_random, &ctr_drbg);
-    if (ret != 0)
-    {
-        Serial.printf("Failed to generate ECDH keypair: -0x%04X\n", -ret);
-        while (1)
-            ;
-    }
-}
-
-void get_server_ecdh_public(uint8_t *pub_key, size_t &pub_key_len)
-{
-    pub_key_len = 65;
-    int ret = mbedtls_ecp_point_write_binary(&server_ecdh_ctx.grp, &server_ecdh_ctx.Q,
-                                             MBEDTLS_ECP_PF_UNCOMPRESSED,
-                                             &pub_key_len, pub_key, pub_key_len);
-    if (ret != 0)
-    {
-        Serial.printf("Failed to export server ECDH public key: -0x%04X\n", -ret);
-        while (1)
-            ;
-    }
-}
-
-void handleInit()
+void handle_handshake()
 {
     if (server.method() != HTTP_POST)
     {
         server.send(405, "text/plain", "Method Not Allowed");
         return;
     }
-    if (!server.hasArg("plain"))
+
+    String requestBody = server.arg("plain");
+    DynamicJsonDocument doc(1024);
+    DeserializationError error = deserializeJson(doc, requestBody);
+
+    if (error)
     {
-        server.send(400, "text/plain", "Missing JSON body");
+        server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
         return;
     }
 
-    String body = server.arg("plain");
-    StaticJsonDocument<2048> doc;
-    DeserializationError err = deserializeJson(doc, body);
-    if (err)
+    String id = doc["id"];
+    String valid_until = doc["valid_until"];
+    String pub = doc["pub"];
+    String signature = doc["signature"];
+    String c_nonce = doc["c_nonce"];
+    String session = doc["session"];
+
+    uint8_t pub_bytes[65];
+    hexToBytes(pub.c_str(), pub_bytes, 65);
+    uint8_t cert_bytes[96];
+    cert_bytes(id.c_str(), pub_bytes, valid_until.c_str(), cert_bytes);
+
+    if (verify(cert_bytes, 96, ca_pub, signature.c_str(), signature.length()) != 0)
     {
-        server.send(400, "text/plain", "Invalid JSON");
+        server.send(303, "application/json", "{\"status\":\"failed\"}");
+        return;
+    }
+    uint8_t s_nonce[12];
+    for (int i = 0; i < 12; i++)
+        s_nonce[i] = random(0, 256);
+
+    
+    mbedtls_ecdh_context session_ctx;
+    gen_key(session_ctx);
+    uint8_t session_pub_bytes[65];
+    get_public_bytes(session_ctx, session_pub_bytes);
+    sessions_ecdh[id] = session_ctx;
+    
+    uint8_t sesion_bytes[142];
+    session_bytes(c_nonce.c_str(), pub_bytes, session_pub_bytes, sesion_bytes);
+
+    uint8_t session_signature[80];
+    size_t session_signature_len;;
+    sign(server_ecdsa_ct, session_bytes, 142, session_signature, session_signature_len);
+    String data = "{\"id\":\"" + id + "\",\"valid_until\":\"" + server_valid_until + "\",\"pub\":\"" + pub_key_hex + "\", \"s_nonce\":\"" + s_nonce + "\",\"session\":\"" + bytesToHex(session_pub_bytes, 65) + "\", \"session_signature\":\"" + bytesToHex(session_signature, session_signature_len) + "\", \"cert_signature\":\"" + server_cert_signature + "\"}";
+    server.send(200, "application/json", data);
+}
+
+
+void handle_authenticate()
+{
+    if (server.method() != HTTP_POST)
+    {
+        server.send(405, "text/plain", "Method Not Allowed");
         return;
     }
 
-    String id_hex = doc["id"] | "";
-    String ecdsa_pubkey_hex = doc["ecdsa_public_key"] | "";
-    uint64_t valid = doc["valid"] | 0;
-    String signature_hex = doc["signature"] | "";
-    String c_nonce_hex = doc["c_nonce"] | "";
-    String c_ecdh_pubkey_hex = doc["session_ecdh_public_key"] | "";
+    String requestBody = server.arg("plain");
+    DynamicJsonDocument doc(1024);
+    DeserializationError error = deserializeJson(doc, requestBody);
 
-    if (id_hex.length() == 0 || ecdsa_pubkey_hex.length() == 0 || signature_hex.length() == 0 ||
-        c_nonce_hex.length() == 0 || c_ecdh_pubkey_hex.length() == 0)
+    if (error)
     {
-        server.send(400, "text/plain", "Missing fields");
+        server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
         return;
     }
 
-    Serial.printf("Received ID: %s\n", id_hex.c_str());
-    Serial.printf("Received ECDSA Public Key: %s\n", ecdsa_pubkey_hex.c_str());
-    Serial.printf("Received Valid Time: %llu\n", valid);
-    Serial.printf("Received Signature: %s\n", signature_hex.c_str());
-    Serial.printf("Received Client Nonce: %s\n", c_nonce_hex.c_str());
-    Serial.printf("Received Client ECDH Public Key: %s\n", c_ecdh_pubkey_hex.c_str());
+    String id = doc["id"];
+    String signature = doc["signature"];
+    String pub = doc["pub"];
 
-    uint8_t id_bytes[6];
-    hexToBytes(id_hex.c_str(), id_bytes, 6);
+    uint8_t pub_bytes[65];
+    hexToBytes(pub.c_str(), pub_bytes, 65);
 
-    uint8_t client_pubkey_bytes[65];
-    hexToBytes(ecdsa_pubkey_hex.c_str(), client_pubkey_bytes, 65);
-
-    size_t signature_len = signature_hex.length() / 2;
-    uint8_t signature_bytes[128];
-    hexToBytes(signature_hex.c_str(), signature_bytes, signature_len);
-
-    uint8_t message[71];
-    memcpy(message, id_bytes, 6);
-    memcpy(message + 6, client_pubkey_bytes, 65);
-
-    uint8_t fixed_client_pubkey[65];
-    hexToBytes(client_pubkey_hex, fixed_client_pubkey, 65);
-    if (memcmp(client_pubkey_bytes, fixed_client_pubkey, 65) != 0)
+    if (sessions_ecdh.find(id) == sessions_ecdh.end())
     {
-        server.send(401, "text/plain", "Client public key mismatch");
+        server.send(404, "application/json", "{\"error\":\"Session not found\"}");
         return;
     }
 
-    int ret = verify(message, 71, client_pubkey_bytes, signature_bytes, signature_len);
-    if (ret != 0)
+    mbedtls_ecdh_context &session_ctx = sessions_ecdh[id];
+    
+    uint8_t session_bytes[142];
+    
+    if (verify(session_bytes, 142, pub_bytes, hexToBytes(signature.c_str(), signature.length()), signature.length()/2) != 0)
     {
-        server.send(401, "text/plain", "Invalid signature");
+        server.send(403, "application/json", "{\"error\":\"Invalid signature\"}");
         return;
     }
 
-    const char s_id[6] = {'S', '1', '2', '3', '4', '5'};
-    uint8_t server_pubkey_bytes[65];
-    size_t pubkey_len = 65;
-    get_public_bytes(server_ecdsa_ctx, server_pubkey_bytes, pubkey_len);
+    server.send(200, "application/json", "{\"status\":\"succesfull\"}");
 
-    char valid_str[20];
-    get_valid_time_string(valid_str, sizeof(valid_str));
+    // valid user 
 
-    uint8_t s_cert_bytes[6 + 65 + 19];
-    cert_bytes((const uint8_t *)s_id, server_pubkey_bytes, (const uint8_t *)valid_str, s_cert_bytes);
+    Serial.println("User authenticated successfully");
 
-    uint8_t s_signature[128];
-    size_t s_signature_len;
-    sign(server_ecdsa_ctx, s_cert_bytes, sizeof(s_cert_bytes), s_signature, s_signature_len);
-
-    generate_server_ecdh_keypair();
-    uint8_t server_ecdh_pubkey[65];
-    size_t ecdh_pub_len = 65;
-    get_server_ecdh_public(server_ecdh_pubkey, ecdh_pub_len);
-
-    uint8_t c_nonce_bytes[12];
-    hexToBytes(c_nonce_hex.c_str(), c_nonce_bytes, 12);
-
-    uint8_t c_ecdh_pubkey_bytes[65];
-    hexToBytes(c_ecdh_pubkey_hex.c_str(), c_ecdh_pubkey_bytes, 65);
-
-    uint8_t sig2_msg[12 + 65 + 65];
-    memcpy(sig2_msg, c_nonce_bytes, 12);
-    memcpy(sig2_msg + 12, c_ecdh_pubkey_bytes, 65);
-    memcpy(sig2_msg + 12 + 65, server_ecdh_pubkey, 65);
-
-    uint8_t sig2[128];
-    size_t sig2_len;
-    sign(server_ecdsa_ctx, sig2_msg, sizeof(sig2_msg), sig2, sig2_len);
-
-    StaticJsonDocument<512> resp;
-    resp["s_cert"] = bytesToHex(s_cert_bytes, sizeof(s_cert_bytes));
-    resp["session_ecdh_public_key"] = bytesToHex(server_ecdh_pubkey, ecdh_pub_len);
-    resp["signature2"] = bytesToHex(sig2, sig2_len);
-
-    String resp_str;
-    serializeJson(resp, resp_str);
-    server.send(200, "application/json", resp_str);
 }
 
 void setup()
 {
     Serial.begin(115200);
     init_crypto_random_engine();
+
+    Wifi.mode(WIFI_AP_STA);
+
+    const char *ssid_sta = "pumkinpatch2";
+    const char *password_sta = "Thisisridiculous!";
+
+    WiFi.mode(WIFI_AP_STA);
+
+    // Connect to WiFi network (STA)
+    WiFi.begin(ssid_sta, password_sta);
+    Serial.println("Connecting to external WiFi...");
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        delay(500);
+        Serial.print(".");
+    }
+
     WiFi.softAP("ESP32", "12345678");
     delay(100);
     Serial.println("AP IP: " + WiFi.softAPIP().toString());
 
-    gen_server_ecdsa_key();
+    init_crypto_random_engine();
+
+    esp32_signup();
+
     generate_server_ecdh_keypair();
 
     server.on("/", HTTP_GET, []()
               { server.send(200, "text/plain", "Welcome to ESP32 server"); });
 
-    server.on("/upload", HTTP_POST, handleInit);
+    server.on("/handshake", HTTP_POST, handle_handshake);
+    server.on("/authenticate", HTTP_POST, handle_authenticate);
     server.begin();
     Serial.println("Server ready.");
 }
