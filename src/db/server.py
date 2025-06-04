@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 import sqlite3
 from datetime import datetime, date, timezone
 import json
@@ -173,6 +173,54 @@ def get_history():
     
     return jsonify(result)
 
+@app.route('/history/today', methods=['GET'])
+def get_today_history():
+    today = date.today().strftime('%Y-%m-%d')
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT
+            e.Name,
+            strftime('%Y-%m-%d', ch.FirstCheckinTime) AS Date,
+            s.TimeSlot,
+            ch.FirstCheckinTime,
+            ch.LastCheckinTime,
+            ch.CheckStatus
+        FROM CheckinHistory ch
+        JOIN Employees e ON ch.EmployeeID = e.EmployeeID
+        JOIN Sessions s ON ch.SessionID = s.SessionID
+        WHERE strftime('%Y-%m-%d', ch.FirstCheckinTime) = ? OR strftime('%Y-%m-%d', ch.LastCheckinTime) = ?
+        ORDER BY ch.FirstCheckinTime DESC
+    """, (today, today))
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(results)
+
+
+@app.route('/history/monthly/<int:employee_id>', methods=['GET'])
+def get_month_history(employee_id):
+    month_str = date.today().strftime('%Y-%m')
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT
+            e.Name,
+            strftime('%Y-%m-%d', ch.FirstCheckinTime) AS Date,
+            s.TimeSlot,
+            ch.FirstCheckinTime,
+            ch.LastCheckinTime,
+            ch.CheckStatus
+        FROM CheckinHistory ch
+        JOIN Employees e ON ch.EmployeeID = e.EmployeeID
+        JOIN Sessions s ON ch.SessionID = s.SessionID
+        WHERE ch.EmployeeID = ?
+          AND (substr(ch.FirstCheckinTime, 1, 7) = ? OR substr(ch.LastCheckinTime, 1, 7) = ?)
+        ORDER BY ch.FirstCheckinTime DESC
+    """, (employee_id, month_str, month_str))
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(results)
+
 @app.route('/sign_cert', methods=['POST'])
 def sign_cert():
     data = request.get_json()
@@ -224,5 +272,27 @@ def sign_cert():
         'ca_pub': ca_public_bytes.hex().upper()
     }), 200
 
+@app.route('/')
+def home():
+    return render_template('web.html')
+
+
+# add test check-in data
+def add_test_data():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM CheckinHistory")
+    if cursor.fetchone()[0] == 0:
+        # Get session IDs
+        cursor.execute("SELECT SessionID FROM Sessions WHERE TimeSlot='Morning'")
+        session_id = cursor.fetchone()[0]
+        now = datetime.now().replace(hour=8, minute=30)
+        cursor.execute("INSERT INTO CheckinHistory (EmployeeID, SessionID, FirstCheckinTime, LastCheckinTime, CheckStatus) VALUES (1, ?, ?, ?, 'on time')", (session_id, now, now))
+        cursor.execute("INSERT INTO CheckinHistory (EmployeeID, SessionID, FirstCheckinTime, LastCheckinTime, CheckStatus) VALUES (2, ?, ?, ?, 'late')", (session_id, now, now))
+        conn.commit()
+    conn.close()
+
+
 if __name__ == '__main__':
+    add_test_data()
     app.run(host='0.0.0.0', port=5000, debug=True)
