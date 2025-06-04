@@ -272,6 +272,59 @@ def sign_cert():
         'ca_pub': ca_public_bytes.hex().upper()
     }), 200
 
+@app.route('/api/attendance_pie')
+def attendance_pie():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT CheckStatus, COUNT(*) as count 
+        FROM CheckinHistory 
+        GROUP BY CheckStatus
+    """)
+    data = cursor.fetchall()
+    conn.close()
+    statuses = [row['CheckStatus'].title() for row in data]
+    counts = [row['count'] for row in data]
+    return jsonify({'labels': statuses, 'counts': counts})
+
+@app.route('/api/monthly_trend')
+def monthly_trend():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT MIN(Date) as min_date FROM Sessions")
+    min_date_row = cursor.fetchone()
+    if not min_date_row['min_date']:
+        return jsonify({'months': [], 'attendance_rates': [], 'late_rates': [], 'absent_rates': []})
+    base_month = datetime.strptime(min_date_row['min_date'], "%Y-%m-%d")
+    months = []
+    attendance_rates = []
+    late_rates = []
+    absent_rates = []
+    for i in range(12):
+        month_date = (base_month.replace(day=1) + 
+                      (datetime(base_month.year + (base_month.month + i - 1) // 12, (base_month.month + i - 1) % 12 + 1, 1) - base_month.replace(day=1)))
+        month_str = month_date.strftime("%Y-%m")
+        months.append(month_str)
+        cursor.execute("""
+            SELECT CheckStatus, COUNT(*) as count
+            FROM CheckinHistory
+            WHERE substr(FirstCheckinTime, 1, 7) = ?
+            GROUP BY CheckStatus
+        """, (month_str,))
+        stats = {row['CheckStatus']: row['count'] for row in cursor.fetchall()}
+        total = sum(stats.values()) or 1
+        attendance_rates.append(round(100 * stats.get('on time', 0) / total, 1))
+        late_rates.append(round(100 * stats.get('late', 0) / total, 1))
+        absent_rates.append(round(100 * stats.get('absent', 0) / total, 1))
+    conn.close()
+    return jsonify({
+        'months': months,
+        'attendance_rates': attendance_rates,
+        'late_rates': late_rates,
+        'absent_rates': absent_rates
+    })
+
+
 @app.route('/')
 def home():
     return render_template('web.html')

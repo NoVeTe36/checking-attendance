@@ -2,95 +2,206 @@
 <html>
 <head>
     <title>Attendance Dashboard</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { font-family: Arial, sans-serif; margin: 2rem; }
         .section { margin: 2rem 0; padding: 1.5rem; border: 1px solid #ddd; }
         table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
         th, td { padding: 0.8rem; border: 1px solid #ddd; text-align: left; }
         th { background-color: #f5f5f5; }
+        .hide-btn { margin-top: 1rem; padding: 0.5rem 1rem; }
+        .chart-container { width: 600px; max-width: 100%; margin: 2rem auto; }
     </style>
 </head>
 <body>
     <h1>Attendance Monitoring</h1>
 
-    <!-- Today's Check-ins Section -->
+    <div class="section chart-container">
+        <h2>Attendance Status Distribution</h2>
+        <canvas id="pieChart"></canvas>
+    </div>
+
+    <div class="section chart-container">
+        <h2>Monthly Attendance Trends</h2>
+        <canvas id="trendChart"></canvas>
+    </div>
+
     <div class="section">
         <h2>Today's Check-ins</h2>
-        <button onclick="loadToday()">Refresh</button>
         <div id="todayResults"></div>
     </div>
 
-    <!-- Monthly Employee History -->
     <div class="section">
         <h2>This Month's Check-ins for User</h2>
         <label for="empId">Employee ID:</label>
-        <input type="number" id="empId" placeholder="Employee ID">
-        <button onclick="loadMonthly()">Show</button>
+        <input type="number" id="empId" placeholder="Employee ID" min="1">
+        <button onclick="startMonthlyAutoRefresh()">Show</button>
         <div id="monthlyResults"></div>
     </div>
 
     <script>
-    async function loadToday() {
-        const response = await fetch(`/history/today`);
-        const data = await response.json();
-        let html = `<table>
-            <tr>
-                <th>Name</th>
-                <th>Date</th>
-                <th>Time Slot</th>
-                <th>Check-in Time</th>
-                <th>Last Check-in Time</th>
-                <th>Status</th>
-            </tr>`;
-        data.forEach(entry => {
-            html += `<tr>
-                <td>${entry.Name}</td>
-                <td>${entry.Date}</td>
-                <td>${entry.TimeSlot}</td>
-                <td>${entry.FirstCheckinTime}</td>
-                <td>${entry.LastCheckinTime}</td>
-                <td>${entry.CheckStatus}</td>
-            </tr>`;
-        });
-        html += '</table>';
+    let pieChart, trendChart, monthlyIntervalId = null;
 
-        document.getElementById('todayResults').innerHTML = html + '</table>';
+    function renderPie(data) {
+        const ctx = document.getElementById('pieChart').getContext('2d');
+        if (pieChart) pieChart.destroy();
+        pieChart = new Chart(ctx, {
+            type: 'pie',
+            data: {
+                labels: data.labels,
+                datasets: [{
+                    data: data.counts,
+                    backgroundColor: ['#e74c3c', '#f39c12', '#2ecc71']
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { position: 'bottom' } }
+            }
+        });
+    }
+    
+
+    function renderTrend(data) {
+        const ctx = document.getElementById('trendChart').getContext('2d');
+        if (trendChart) trendChart.destroy();
+        trendChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: data.months,
+                datasets: [
+                    {
+                        label: 'Absent (%)',
+                        data: data.attendance_rates,
+                        borderColor: '#2ecc71',
+                        backgroundColor: '#2ecc71',
+                        fill: false,
+                        tension: 0.1
+                    },
+                    {
+                        label: 'Late (%)',
+                        data: data.late_rates,
+                        borderColor: '#f39c12',
+                        backgroundColor: '#f39c12',
+                        fill: false,
+                        tension: 0.1
+                    },
+                    {
+                        label: 'On time (%)',
+                        data: data.absent_rates,
+                        borderColor: '#e74c3c',
+                        backgroundColor: '#e74c3c',
+                        fill: false,
+                        tension: 0.1
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { position: 'bottom' } },
+                scales: {
+                    y: { beginAtZero: true, max: 100 }
+                }
+            }
+        });
     }
 
-    async function loadMonthly() {
+    function loadPieChart() {
+        fetch('/api/attendance_pie')
+            .then(res => res.json())
+            .then(renderPie);
+    }
+
+    function loadTrendChart() {
+        fetch('/api/monthly_trend')
+            .then(res => res.json())
+            .then(renderTrend);
+    }
+
+    function loadToday() {
+        fetch('/history/today')
+            .then(res => res.json())
+            .then(data => {
+                let html = `<table>
+                    <tr>
+                        <th>Name</th>
+                        <th>Date</th>
+                        <th>Time Slot</th>
+                        <th>Check-in Time</th>
+                        <th>Last Check-in Time</th>
+                        <th>Status</th>
+                    </tr>`;
+                data.forEach(entry => {
+                    html += `<tr>
+                        <td>${entry.Name}</td>
+                        <td>${entry.Date}</td>
+                        <td>${entry.TimeSlot}</td>
+                        <td>${entry.FirstCheckinTime}</td>
+                        <td>${entry.LastCheckinTime}</td>
+                        <td>${entry.CheckStatus}</td>
+                    </tr>`;
+                });
+                html += '</table>';
+                document.getElementById('todayResults').innerHTML = html;
+            });
+    }
+
+    function loadMonthly() {
         const empId = document.getElementById('empId').value;
         if (!empId) {
             document.getElementById('monthlyResults').innerHTML = '<em>Please enter an Employee ID.</em>';
             return;
         }
-        const response = await fetch(`/history/monthly/${empId}`);
-        const data = await response.json();
-        let html = `<table>
-            <tr>
-                <th>Name</th>
-                <th>Date</th>
-                <th>Time Slot</th>
-                <th>Check-in Time</th>
-                <th>Last Check-in Time</th>
-                <th>Status</th>
-            </tr>`;
-        data.forEach(entry => {
-            html += `<tr>
-                <td>${entry.Name}</td>
-                <td>${entry.Date}</td>
-                <td>${entry.TimeSlot}</td>
-                <td>${entry.FirstCheckinTime}</td>
-                <td>${entry.LastCheckinTime}</td>
-                <td>${entry.CheckStatus}</td>
-            </tr>`;
-        });
-        html += '</table>';
-
-        document.getElementById('monthlyResults').innerHTML = html + '</table>';
+        fetch(`/history/monthly/${empId}`)
+            .then(res => res.json())
+            .then(data => {
+                let html = `<table>
+                    <tr>
+                        <th>Name</th>
+                        <th>Date</th>
+                        <th>Time Slot</th>
+                        <th>Check-in Time</th>
+                        <th>Last Check-in Time</th>
+                        <th>Status</th>
+                    </tr>`;
+                data.forEach(entry => {
+                    html += `<tr>
+                        <td>${entry.Name}</td>
+                        <td>${entry.Date}</td>
+                        <td>${entry.TimeSlot}</td>
+                        <td>${entry.FirstCheckinTime}</td>
+                        <td>${entry.LastCheckinTime}</td>
+                        <td>${entry.CheckStatus}</td>
+                    </tr>`;
+                });
+                html += '</table>';
+                html += `<button class="hide-btn" onclick="hideMonthly()">Hide</button>`;
+                document.getElementById('monthlyResults').innerHTML = html;
+            });
     }
 
-    // Load today's data on page load
-    window.onload = loadToday;
+    function startMonthlyAutoRefresh() {
+        if (monthlyIntervalId) clearInterval(monthlyIntervalId);
+        loadMonthly();
+        monthlyIntervalId = setInterval(loadMonthly, 5000);
+    }
+
+    function hideMonthly() {
+        document.getElementById('monthlyResults').innerHTML = '';
+        if (monthlyIntervalId) {
+            clearInterval(monthlyIntervalId);
+            monthlyIntervalId = null;
+        }
+    }
+
+    setInterval(loadPieChart, 5000);
+    setInterval(loadTrendChart, 5000);
+    setInterval(loadToday, 5000);
+    window.onload = function() {
+        loadPieChart();
+        loadTrendChart();
+        loadToday();
+    };
     </script>
 </body>
 </html>
