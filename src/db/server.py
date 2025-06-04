@@ -133,7 +133,7 @@ def get_employees():
     """Debug endpoint to see all employees and tokens"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT EmployeeID, Name FROM Employees")
+    cursor.execute("SELECT EmployeeID, Name, Role FROM Employees")
     employees = cursor.fetchall()
     conn.close()
     
