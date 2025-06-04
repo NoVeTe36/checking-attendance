@@ -1,6 +1,7 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template
 import sqlite3
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
+import random
 import json
 import ecdsa
 import ecdh_aes
@@ -132,7 +133,7 @@ def get_employees():
     """Debug endpoint to see all employees and tokens"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT EmployeeID, Name, Token, FirstTime FROM Employees")
+    cursor.execute("SELECT EmployeeID, Name FROM Employees")
     employees = cursor.fetchall()
     conn.close()
     
@@ -172,6 +173,54 @@ def get_history():
         })
     
     return jsonify(result)
+
+@app.route('/history/today', methods=['GET'])
+def get_today_history():
+    today = date.today().strftime('%Y-%m-%d')
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT
+            e.Name,
+            strftime('%Y-%m-%d', ch.FirstCheckinTime) AS Date,
+            s.TimeSlot,
+            ch.FirstCheckinTime,
+            ch.LastCheckinTime,
+            ch.CheckStatus
+        FROM CheckinHistory ch
+        JOIN Employees e ON ch.EmployeeID = e.EmployeeID
+        JOIN Sessions s ON ch.SessionID = s.SessionID
+        WHERE strftime('%Y-%m-%d', ch.FirstCheckinTime) = ? OR strftime('%Y-%m-%d', ch.LastCheckinTime) = ?
+        ORDER BY ch.FirstCheckinTime DESC
+    """, (today, today))
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(results)
+
+
+@app.route('/history/monthly/<int:employee_id>', methods=['GET'])
+def get_month_history(employee_id):
+    month_str = date.today().strftime('%Y-%m')
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT
+            e.Name,
+            strftime('%Y-%m-%d', ch.FirstCheckinTime) AS Date,
+            s.TimeSlot,
+            ch.FirstCheckinTime,
+            ch.LastCheckinTime,
+            ch.CheckStatus
+        FROM CheckinHistory ch
+        JOIN Employees e ON ch.EmployeeID = e.EmployeeID
+        JOIN Sessions s ON ch.SessionID = s.SessionID
+        WHERE ch.EmployeeID = ?
+          AND (substr(ch.FirstCheckinTime, 1, 7) = ? OR substr(ch.LastCheckinTime, 1, 7) = ?)
+        ORDER BY ch.FirstCheckinTime DESC
+    """, (employee_id, month_str, month_str))
+    results = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(results)
 
 @app.route('/sign_cert', methods=['POST'])
 def sign_cert():
@@ -224,5 +273,118 @@ def sign_cert():
         'ca_pub': ca_public_bytes.hex().upper()
     }), 200
 
+@app.route('/api/attendance_pie')
+def attendance_pie():
+    from datetime import date
+    today = date.today().strftime('%Y-%m-%d')
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT CheckStatus, COUNT(*) as count 
+        FROM CheckinHistory 
+        WHERE substr(FirstCheckinTime, 1, 10) = ?
+        GROUP BY CheckStatus
+    """, (today,))
+    data = cursor.fetchall()
+    conn.close()
+    statuses = [row['CheckStatus'].title() for row in data]
+    counts = [row['count'] for row in data]
+    return jsonify({'labels': statuses, 'counts': counts})
+
+@app.route('/api/daily_trend')
+def daily_trend():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    today = datetime.now()
+    year_month = today.strftime('%Y-%m')
+    cursor.execute("""
+        SELECT substr(FirstCheckinTime, 1, 10) AS day, CheckStatus, COUNT(*) as count
+        FROM CheckinHistory
+        WHERE substr(FirstCheckinTime, 1, 7) = ?
+        GROUP BY day, CheckStatus
+        ORDER BY day
+    """, (year_month,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    data = {}
+    for row in rows:
+        day = row['day']
+        status = row['CheckStatus']
+        count = row['count']
+        if day not in data:
+            data[day] = {'on time': 0, 'late': 0, 'absent': 0}
+        data[day][status] = count
+
+    days = sorted(data.keys())
+    on_time_counts = [data[day]['on time'] for day in days]
+    late_counts = [data[day]['late'] for day in days]
+    absent_counts = [data[day]['absent'] for day in days]
+
+    return jsonify({
+        'days': days,
+        'on_time_counts': on_time_counts,
+        'late_counts': late_counts,
+        'absent_counts': absent_counts
+    })
+
+
+@app.route('/')
+def home():
+    return render_template('web.html')
+
+
+def add_test_data():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    timeslot_mapping = {
+        'Morning': '08:00',
+        'Afternoon': '13:00',
+        'Evening': '18:00'
+    }
+
+    cursor.execute("SELECT SessionID, EmployeeID, Date, TimeSlot FROM Sessions")
+    sessions = cursor.fetchall()
+
+    # Create checkin data
+    checkin_data = []
+
+    for session in sessions:
+        session_id, employee_id, date, time_slot = session
+
+        # Determine expected checkin time
+        start_time = timeslot_mapping.get(time_slot, '08:00')  # default to 08:00 if unknown
+        hour, minute = map(int, start_time.split(':'))
+
+        # Create actual checkin time
+        base_datetime = datetime.strptime(f"{date} {start_time}", "%Y-%m-%d %H:%M")
+
+        # 70% on time, 25% late, 5% absent
+        rand = random.random()
+        if rand < 0.05:  # 5% absent
+            checkin_data.append((employee_id, session_id, None, None, 'absent'))
+        elif rand < 0.30:  # 25% late
+            delay_minutes = random.randint(5, 60)
+            checkin_time = base_datetime + timedelta(minutes=delay_minutes)
+            last_checkin = checkin_time + timedelta(minutes=random.randint(0, 30))
+            checkin_data.append((employee_id, session_id, checkin_time, last_checkin, 'late'))
+        else:  # 70% on time
+            early_minutes = random.randint(-10, 5)
+            checkin_time = base_datetime + timedelta(minutes=early_minutes)
+            last_checkin = checkin_time + timedelta(minutes=random.randint(0, 15))
+            checkin_data.append((employee_id, session_id, checkin_time, last_checkin, 'on time'))
+
+    # Insert checkin data
+    cursor.executemany("""
+        INSERT INTO CheckinHistory (EmployeeID, SessionID, FirstCheckinTime, LastCheckinTime, CheckStatus) 
+        VALUES (?, ?, ?, ?, ?)
+    """, checkin_data)
+
+    
+    conn.commit()
+    conn.close()
+
+
 if __name__ == '__main__':
+    add_test_data()
     app.run(host='0.0.0.0', port=5000, debug=True)
