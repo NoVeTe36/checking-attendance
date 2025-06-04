@@ -133,7 +133,7 @@ def get_employees():
     """Debug endpoint to see all employees and tokens"""
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT EmployeeID, Name, Token, FirstTime FROM Employees")
+    cursor.execute("SELECT EmployeeID, Name FROM Employees")
     employees = cursor.fetchall()
     conn.close()
     
@@ -334,48 +334,52 @@ def home():
     return render_template('web.html')
 
 
-# add test check-in data
 def add_test_data():
     conn = get_db_connection()
     cursor = conn.cursor()
+    timeslot_mapping = {
+        'Morning': '08:00',
+        'Afternoon': '13:00',
+        'Evening': '18:00'
+    }
+
     cursor.execute("SELECT SessionID, EmployeeID, Date, TimeSlot FROM Sessions")
     sessions = cursor.fetchall()
-    
+
     # Create checkin data
     checkin_data = []
-    
+
     for session in sessions:
         session_id, employee_id, date, time_slot = session
-        
+
         # Determine expected checkin time
-        start_time = time_slot.split('-')[0]
+        start_time = timeslot_mapping.get(time_slot, '08:00')  # default to 08:00 if unknown
         hour, minute = map(int, start_time.split(':'))
-        
+
         # Create actual checkin time
         base_datetime = datetime.strptime(f"{date} {start_time}", "%Y-%m-%d %H:%M")
-        
+
         # 70% on time, 25% late, 5% absent
         rand = random.random()
         if rand < 0.05:  # 5% absent
             checkin_data.append((employee_id, session_id, None, None, 'absent'))
         elif rand < 0.30:  # 25% late
-            # Late by 5-60 minutes
             delay_minutes = random.randint(5, 60)
             checkin_time = base_datetime + timedelta(minutes=delay_minutes)
             last_checkin = checkin_time + timedelta(minutes=random.randint(0, 30))
             checkin_data.append((employee_id, session_id, checkin_time, last_checkin, 'late'))
         else:  # 70% on time
-            # Checkin 0-10 minutes early or exactly on time
             early_minutes = random.randint(-10, 5)
             checkin_time = base_datetime + timedelta(minutes=early_minutes)
             last_checkin = checkin_time + timedelta(minutes=random.randint(0, 15))
             checkin_data.append((employee_id, session_id, checkin_time, last_checkin, 'on time'))
-    
+
     # Insert checkin data
     cursor.executemany("""
         INSERT INTO CheckinHistory (EmployeeID, SessionID, FirstCheckinTime, LastCheckinTime, CheckStatus) 
         VALUES (?, ?, ?, ?, ?)
     """, checkin_data)
+
     
     conn.commit()
     conn.close()
