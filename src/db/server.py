@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, render_template
 import sqlite3
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
+import random
 import json
 import ecdsa
 import ecdh_aes
@@ -274,54 +275,57 @@ def sign_cert():
 
 @app.route('/api/attendance_pie')
 def attendance_pie():
+    from datetime import date
+    today = date.today().strftime('%Y-%m-%d')
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT CheckStatus, COUNT(*) as count 
         FROM CheckinHistory 
+        WHERE substr(FirstCheckinTime, 1, 10) = ?
         GROUP BY CheckStatus
-    """)
+    """, (today,))
     data = cursor.fetchall()
     conn.close()
     statuses = [row['CheckStatus'].title() for row in data]
     counts = [row['count'] for row in data]
     return jsonify({'labels': statuses, 'counts': counts})
 
-@app.route('/api/monthly_trend')
-def monthly_trend():
+@app.route('/api/daily_trend')
+def daily_trend():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT MIN(Date) as min_date FROM Sessions")
-    min_date_row = cursor.fetchone()
-    if not min_date_row['min_date']:
-        return jsonify({'months': [], 'attendance_rates': [], 'late_rates': [], 'absent_rates': []})
-    base_month = datetime.strptime(min_date_row['min_date'], "%Y-%m-%d")
-    months = []
-    attendance_rates = []
-    late_rates = []
-    absent_rates = []
-    for i in range(12):
-        month_date = (base_month.replace(day=1) + 
-                      (datetime(base_month.year + (base_month.month + i - 1) // 12, (base_month.month + i - 1) % 12 + 1, 1) - base_month.replace(day=1)))
-        month_str = month_date.strftime("%Y-%m")
-        months.append(month_str)
-        cursor.execute("""
-            SELECT CheckStatus, COUNT(*) as count
-            FROM CheckinHistory
-            WHERE substr(FirstCheckinTime, 1, 7) = ?
-            GROUP BY CheckStatus
-        """, (month_str,))
-        stats = {row['CheckStatus']: row['count'] for row in cursor.fetchall()}
-        total = sum(stats.values()) or 1
-        attendance_rates.append(round(100 * stats.get('on time', 0) / total, 1))
-        late_rates.append(round(100 * stats.get('late', 0) / total, 1))
-        absent_rates.append(round(100 * stats.get('absent', 0) / total, 1))
+    today = datetime.now()
+    year_month = today.strftime('%Y-%m')
+    cursor.execute("""
+        SELECT substr(FirstCheckinTime, 1, 10) AS day, CheckStatus, COUNT(*) as count
+        FROM CheckinHistory
+        WHERE substr(FirstCheckinTime, 1, 7) = ?
+        GROUP BY day, CheckStatus
+        ORDER BY day
+    """, (year_month,))
+    rows = cursor.fetchall()
     conn.close()
+
+    data = {}
+    for row in rows:
+        day = row['day']
+        status = row['CheckStatus']
+        count = row['count']
+        if day not in data:
+            data[day] = {'on time': 0, 'late': 0, 'absent': 0}
+        data[day][status] = count
+
+    days = sorted(data.keys())
+    on_time_counts = [data[day]['on time'] for day in days]
+    late_counts = [data[day]['late'] for day in days]
+    absent_counts = [data[day]['absent'] for day in days]
+
     return jsonify({
-        'months': months,
-        'attendance_rates': attendance_rates,
-        'late_rates': late_rates,
-        'absent_rates': absent_rates
+        'days': days,
+        'on_time_counts': on_time_counts,
+        'late_counts': late_counts,
+        'absent_counts': absent_counts
     })
 
 
@@ -334,15 +338,46 @@ def home():
 def add_test_data():
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM CheckinHistory")
-    if cursor.fetchone()[0] == 0:
-        # Get session IDs
-        cursor.execute("SELECT SessionID FROM Sessions WHERE TimeSlot='Morning'")
-        session_id = cursor.fetchone()[0]
-        now = datetime.now().replace(hour=8, minute=30)
-        cursor.execute("INSERT INTO CheckinHistory (EmployeeID, SessionID, FirstCheckinTime, LastCheckinTime, CheckStatus) VALUES (1, ?, ?, ?, 'on time')", (session_id, now, now))
-        cursor.execute("INSERT INTO CheckinHistory (EmployeeID, SessionID, FirstCheckinTime, LastCheckinTime, CheckStatus) VALUES (2, ?, ?, ?, 'late')", (session_id, now, now))
-        conn.commit()
+    cursor.execute("SELECT SessionID, EmployeeID, Date, TimeSlot FROM Sessions")
+    sessions = cursor.fetchall()
+    
+    # Create checkin data
+    checkin_data = []
+    
+    for session in sessions:
+        session_id, employee_id, date, time_slot = session
+        
+        # Determine expected checkin time
+        start_time = time_slot.split('-')[0]
+        hour, minute = map(int, start_time.split(':'))
+        
+        # Create actual checkin time
+        base_datetime = datetime.strptime(f"{date} {start_time}", "%Y-%m-%d %H:%M")
+        
+        # 70% on time, 25% late, 5% absent
+        rand = random.random()
+        if rand < 0.05:  # 5% absent
+            checkin_data.append((employee_id, session_id, None, None, 'absent'))
+        elif rand < 0.30:  # 25% late
+            # Late by 5-60 minutes
+            delay_minutes = random.randint(5, 60)
+            checkin_time = base_datetime + timedelta(minutes=delay_minutes)
+            last_checkin = checkin_time + timedelta(minutes=random.randint(0, 30))
+            checkin_data.append((employee_id, session_id, checkin_time, last_checkin, 'late'))
+        else:  # 70% on time
+            # Checkin 0-10 minutes early or exactly on time
+            early_minutes = random.randint(-10, 5)
+            checkin_time = base_datetime + timedelta(minutes=early_minutes)
+            last_checkin = checkin_time + timedelta(minutes=random.randint(0, 15))
+            checkin_data.append((employee_id, session_id, checkin_time, last_checkin, 'on time'))
+    
+    # Insert checkin data
+    cursor.executemany("""
+        INSERT INTO CheckinHistory (EmployeeID, SessionID, FirstCheckinTime, LastCheckinTime, CheckStatus) 
+        VALUES (?, ?, ?, ?, ?)
+    """, checkin_data)
+    
+    conn.commit()
     conn.close()
 
 

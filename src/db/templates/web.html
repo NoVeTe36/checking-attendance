@@ -68,27 +68,27 @@
         trendChart = new Chart(ctx, {
             type: 'line',
             data: {
-                labels: data.months,
+                labels: data.days,
                 datasets: [
                     {
-                        label: 'Absent (%)',
-                        data: data.attendance_rates,
+                        label: 'On Time',
+                        data: data.on_time_counts,
                         borderColor: '#2ecc71',
                         backgroundColor: '#2ecc71',
                         fill: false,
                         tension: 0.1
                     },
                     {
-                        label: 'Late (%)',
-                        data: data.late_rates,
+                        label: 'Late',
+                        data: data.late_counts,
                         borderColor: '#f39c12',
                         backgroundColor: '#f39c12',
                         fill: false,
                         tension: 0.1
                     },
                     {
-                        label: 'On time (%)',
-                        data: data.absent_rates,
+                        label: 'Absent',
+                        data: data.absent_counts,
                         borderColor: '#e74c3c',
                         backgroundColor: '#e74c3c',
                         fill: false,
@@ -100,10 +100,16 @@
                 responsive: true,
                 plugins: { legend: { position: 'bottom' } },
                 scales: {
-                    y: { beginAtZero: true, max: 100 }
+                    y: { beginAtZero: true }
                 }
             }
         });
+    }
+
+    function loadTrendChart() {
+        fetch('/api/daily_trend')
+            .then(res => res.json())
+            .then(renderTrend);
     }
 
     function loadPieChart() {
@@ -112,11 +118,6 @@
             .then(renderPie);
     }
 
-    function loadTrendChart() {
-        fetch('/api/monthly_trend')
-            .then(res => res.json())
-            .then(renderTrend);
-    }
 
     function loadToday() {
         fetch('/history/today')
