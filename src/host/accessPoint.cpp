@@ -138,7 +138,11 @@ void handleInit()
 
     Serial.printf("Received ID: %s\n", id_hex.c_str());
     Serial.printf("Received ECDSA Public Key: %s\n", ecdsa_pubkey_hex.c_str());
-    
+    Serial.printf("Received Valid Time: %llu\n", valid);
+    Serial.printf("Received Signature: %s\n", signature_hex.c_str());
+    Serial.printf("Received Client Nonce: %s\n", c_nonce_hex.c_str());
+    Serial.printf("Received Client ECDH Public Key: %s\n", c_ecdh_pubkey_hex.c_str());
+
     uint8_t id_bytes[6];
     hexToBytes(id_hex.c_str(), id_bytes, 6);
 
