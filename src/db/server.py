@@ -35,7 +35,6 @@ def checkin():
 
         if not employee:
             conn.close()
-            print(f"Invalid token: {token}")
             return jsonify({
                 'success': False,
                 'message': 'Invalid token'
