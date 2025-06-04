@@ -21,12 +21,13 @@ IPAddress secondaryDNS(8, 8, 4, 4);
 WebServer server(80);
 
 // External Flask server
-const char* FLASK_SERVER_URL = "http://192.168.86.59:5000/checkin";
+const char* FLASK_SERVER_URL = "http://192.168.86.69:5000/checkin";
 
 // Function declarations
 void handleCheckin();
 void handleStatus();
-bool forwardToFlaskServer(String token);
+bool forwardToFlaskServer(String jsonPayload);
+void testFlaskServerConnection();
 
 void setup() {
   Serial.begin(115200);
@@ -58,6 +59,10 @@ void setup() {
   Serial.println(WiFi.localIP());
   Serial.print("Gateway: ");
   Serial.println(WiFi.gatewayIP());
+  
+  // Test Flask server connectivity
+  Serial.println("Testing Flask server connectivity...");
+  testFlaskServerConnection();
   
   // Setup web server routes
   server.on("/checkin", HTTP_POST, handleCheckin);
@@ -95,9 +100,11 @@ void handleCheckin() {
   }
   
   String requestBody = server.arg("plain");
-  Serial.println("Received data: " + requestBody);
+  String senderIP = server.client().remoteIP().toString();
   
-  // Parse JSON using updated ArduinoJson
+  Serial.println("Received from " + senderIP + ": " + requestBody);
+  
+  // Parse JSON to check what type of request this is
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, requestBody);
   
@@ -107,45 +114,33 @@ void handleCheckin() {
     return;
   }
   
+  // Check what fields we have
   String token = doc["token"] | "";
-  unsigned long timestamp = doc["timestamp"] | 0;
-  String senderIP = server.client().remoteIP().toString();
+  String name = doc["Name"] | "";
+  String certId = doc["cert_id"] | "";
   
-  Serial.print("Token: ");
-  Serial.println(token);
-  Serial.print("Timestamp: ");
-  Serial.println(timestamp);
-  Serial.print("From Sender IP: ");
-  Serial.println(senderIP);
+  Serial.println("Request contains:");
+  if (token.length() > 0) Serial.println("  Token: " + token);
+  if (name.length() > 0) Serial.println("  Name: " + name);
+  if (certId.length() > 0) Serial.println("  Cert ID: " + certId);
   
-  // Forward to Flask server
-  bool serverResult = forwardToFlaskServer(token);
+  // Forward the complete request body to Flask server
+  bool serverResult = forwardToFlaskServer(requestBody);
   
-  // Prepare response
-  String response;
-  if (serverResult) {
-    response = "{\"success\":true,\"message\":\"Check-in successful\"}";
-    Serial.println("✅ Check-in successful");
-  } else {
-    response = "{\"success\":false,\"message\":\"Check-in failed\"}";
-    Serial.println("❌ Check-in failed");
-  }
-  
-  // Send response
-  server.send(200, "application/json", response);
-  Serial.println("Response sent to sender");
+  // Get the actual response from Flask and forward it back
   Serial.println("==================================");
 }
 
 void handleStatus() {
-  String status = "{\"status\":\"online\",\"ip\":\"" + WiFi.localIP().toString() + "\"}";
+  String status = "{\"status\":\"online\",\"role\":\"receiver\",\"ip\":\"" + WiFi.localIP().toString() + "\"}";
   server.send(200, "application/json", status);
   Serial.println("Status request handled");
 }
 
-bool forwardToFlaskServer(String token) {
+bool forwardToFlaskServer(String jsonPayload) {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi not connected!");
+    server.send(500, "application/json", "{\"success\":false,\"message\":\"WiFi not connected\"}");
     return false;
   }
   
@@ -154,15 +149,12 @@ bool forwardToFlaskServer(String token) {
   
   http.begin(client, FLASK_SERVER_URL);
   http.addHeader("Content-Type", "application/json");
-  http.setTimeout(10000);
+  http.setTimeout(15000);
   
-  // Create JSON payload
-  String jsonString = "{\"token\":\"" + token + "\",\"session_id\":1}";
-  
-  Serial.println("Forwarding to Flask server: " + jsonString);
+  Serial.println("Forwarding to Flask server: " + jsonPayload);
   Serial.println("URL: " + String(FLASK_SERVER_URL));
   
-  int httpResponseCode = http.POST(jsonString);
+  int httpResponseCode = http.POST(jsonPayload);
   
   Serial.print("Flask server response code: ");
   Serial.println(httpResponseCode);
@@ -171,26 +163,65 @@ bool forwardToFlaskServer(String token) {
     String response = http.getString();
     Serial.println("Flask server response: " + response);
     
-    // Parse Flask response using updated ArduinoJson
-    JsonDocument responseDoc;
-    DeserializationError error = deserializeJson(responseDoc, response);
+    // Forward Flask server's response directly to the sender
+    server.send(httpResponseCode, "application/json", response);
     
-    if (!error) {
-      bool success = responseDoc["success"] | false;
-      http.end();
-      return success;
+    // Determine success for return value
+    bool success = response.indexOf("\"success\":true") > -1;
+    
+    if (success) {
+      Serial.println("✅ Check-in successful");
     } else {
-      Serial.print("JSON parse error: ");
-      Serial.println(error.c_str());
-      // Fallback: check for success in response text
-      bool success = response.indexOf("\"success\":true") > -1;
-      http.end();
-      return success;
+      Serial.println("❌ Check-in failed");
     }
+    
+    http.end();
+    return success;
   } else {
     Serial.print("Flask server request failed: ");
     Serial.println(httpResponseCode);
+    
+    // Send error response
+    String errorResponse = "{\"success\":false,\"message\":\"Cannot reach Flask server\"}";
+    server.send(500, "application/json", errorResponse);
+    
     http.end();
     return false;
   }
+}
+
+void testFlaskServerConnection() {
+  HTTPClient http;
+  WiFiClient client;
+  
+  // Test Flask server employees endpoint
+  String testURL = "http://192.168.86.69:5000/employees";
+  http.begin(client, testURL);
+  http.setTimeout(5000);
+  
+  int responseCode = http.GET();
+  
+  if (responseCode > 0) {
+    String response = http.getString();
+    Serial.println("✅ Flask server is reachable");
+    Serial.println("Response code: " + String(responseCode));
+    Serial.println("Sample response: " + response.substring(0, 100) + "...");
+  } else {
+    Serial.println("❌ Cannot reach Flask server");
+    Serial.println("Error code: " + String(responseCode));
+    
+    // Additional diagnostics
+    Serial.println("Checking network connectivity...");
+    
+    // Test basic HTTP connectivity
+    http.begin(client, "http://httpbin.org/get");
+    int testCode = http.GET();
+    if (testCode > 0) {
+      Serial.println("✅ Internet connectivity OK");
+    } else {
+      Serial.println("❌ No internet connectivity");
+    }
+  }
+  
+  http.end();
 }

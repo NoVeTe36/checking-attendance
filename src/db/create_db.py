@@ -67,15 +67,15 @@ INSERT INTO Employees (Name, Role) VALUES
 ('Amanda Anderson', 'Cashier'),
 ('Robert Thomas', 'Supervisor'),
 ('Jennifer Jackson', 'Cashier'),
-('William White', 'Supervisor'),
+('William White', 'Cashier'),
 ('Elizabeth Harris', 'Cashier'),
-('Christopher Martin', 'Supervisor'),
+('Christopher Martin', 'Cashier'),
 ('Patricia Thompson', 'Cashier'),
-('Joshua Garcia', 'Supervisor'),
+('Joshua Garcia', 'Cashier'),
 ('Linda Martinez', 'Cashier'),
-('Daniel Robinson', 'Supervisor'),
+('Daniel Robinson', 'Cashier'),
 ('Barbara Clark', 'Cashier'),
-('Matthew Rodriguez', 'Supervisor');
+('Matthew Rodriguez', 'Cashier');
 """)
 
 conn.commit()
