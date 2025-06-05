@@ -264,7 +264,7 @@ def sign_cert():
 
     
     valid_until = datetime.now(timezone.utc)
-    cursor.execute("update cert set issued = 1, pub_key = ?, valid_until = ?", (pub_key, valid_until))
+    cursor.execute("update cert set issued = 1, pub_key = ?, valid_until = ? where id = ?", (pub_key, valid_until, id))
     conn.commit()
     conn.close()
 

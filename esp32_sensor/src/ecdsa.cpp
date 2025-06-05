@@ -113,6 +113,26 @@ void get_public_bytes(mbedtls_ecdsa_context &ctx, uint8_t pub_key[], size_t &pub
     }
 }
 
+void cert_bytes(const uint8_t id[],
+                const uint8_t public_bytes[],
+                const uint8_t valid_until[],
+                uint8_t cert_bytes[])
+{
+    memcpy(cert_bytes, id, 6);
+    memcpy(cert_bytes + 6, public_bytes, 65);
+    memcpy(cert_bytes + 6 + 65, valid_until, 19);
+}
+
+void session_bytes(const uint8_t nonce[],
+                   const uint8_t c_pub_bytes[],
+                   const uint8_t s_pub_bytes[],
+                   uint8_t session_bytes[])
+{
+    memcpy(session_bytes, nonce, 12);
+    memcpy(session_bytes + 12, c_pub_bytes, 65);
+    memcpy(session_bytes + 12 + 65, s_pub_bytes, 65);
+}
+
 void sign(mbedtls_ecdsa_context &ctx,
           const uint8_t message[],
           size_t message_len,
@@ -163,24 +183,4 @@ int verify(const uint8_t message[],
     ret = mbedtls_ecdsa_read_signature(&ctx, hash, sizeof(hash), signature, signature_len);
     mbedtls_ecdsa_free(&ctx);
     return ret;
-}
-
-void cert_bytes(const uint8_t id[],
-                const uint8_t public_bytes[],
-                const uint8_t valid_until[],
-                uint8_t cert_bytes[])
-{
-    memcpy(cert_bytes, id, 6);
-    memcpy(cert_bytes + 6, public_bytes, 65);
-    memcpy(cert_bytes + 6 + 65, valid_until, 19);
-}
-
-void session_bytes(const uint8_t nonce[],
-                   const uint8_t c_pub_bytes[],
-                   const uint8_t s_pub_bytes[],
-                   uint8_t session_bytes[])
-{
-    memcpy(session_bytes, nonce, 12);
-    memcpy(session_bytes + 12, c_pub_bytes, 65);
-    memcpy(session_bytes + 12 + 65, s_pub_bytes, 65);
 }

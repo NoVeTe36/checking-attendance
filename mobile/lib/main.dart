@@ -32,6 +32,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  final TextEditingController _ipController = TextEditingController();
   final TextEditingController _idController = TextEditingController();
   final TextEditingController _tokenController = TextEditingController();
 
@@ -104,7 +105,7 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    final url = Uri.parse("http://192.168.86.64:5000/sign_cert");
+    final url = Uri.parse(_ipController.text.trim());
 
     final response = await http.post(
       url,
@@ -139,6 +140,10 @@ class _HomePageState extends State<HomePage> {
         padding: const EdgeInsets.all(16.0),
         child: Column(
           children: [
+            TextField(
+              controller: _ipController,
+              decoration: const InputDecoration(labelText: 'CA IP'),
+            ),
             TextField(
               controller: _idController,
               decoration: const InputDecoration(labelText: 'ID'),
