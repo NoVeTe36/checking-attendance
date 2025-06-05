@@ -32,6 +32,7 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  final TextEditingController _ipController = TextEditingController();
   final TextEditingController _idController = TextEditingController();
   final TextEditingController _tokenController = TextEditingController();
 
@@ -78,6 +79,9 @@ class _HomePageState extends State<HomePage> {
     final ecdasPrivate = ecdsaKeyPair.privateKey;
     final keyHex = _bytesToHex(ecdsaPubBytes).toUpperCase();
 
+    print("id: $id");
+    print("ecdsaPubBytes: $keyHex");
+
     ecdsa_pub = keyHex;
 
     final dir = await getApplicationDocumentsDirectory();
@@ -101,13 +105,15 @@ class _HomePageState extends State<HomePage> {
       return;
     }
 
-    final url = Uri.parse("http://192.168.86.64:5000/sign_cert");
+    final url = Uri.parse(_ipController.text.trim());
 
     final response = await http.post(
       url,
       headers: {'Content-Type': 'application/json'},
       body: jsonEncode({'id': id, 'token': token, 'pub_key': keyHex}),
     );
+
+    print(response.body);
 
     if (response.statusCode == 200) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -135,6 +141,10 @@ class _HomePageState extends State<HomePage> {
         child: Column(
           children: [
             TextField(
+              controller: _ipController,
+              decoration: const InputDecoration(labelText: 'CA IP'),
+            ),
+            TextField(
               controller: _idController,
               decoration: const InputDecoration(labelText: 'ID'),
             ),
@@ -156,7 +166,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  String _bytesToHex(Uint8List bytes) {
+  static String _bytesToHex(Uint8List bytes) {
     final buffer = StringBuffer();
     for (var b in bytes) {
       buffer.write(b.toRadixString(16).padLeft(2, '0'));
@@ -164,9 +174,22 @@ class _HomePageState extends State<HomePage> {
     return buffer.toString();
   }
 
+  static Uint8List _hexToBytes(String hex) {
+    final cleanedHex = hex.replaceAll(RegExp(r'\s+'), '');
+    final length = cleanedHex.length;
+    final result = Uint8List(length ~/ 2);
+
+    for (int i = 0; i < length; i += 2) {
+      final byte = cleanedHex.substring(i, i + 2);
+      result[i ~/ 2] = int.parse(byte, radix: 16);
+    }
+
+    return result;
+  }
+
   Future<void> _authenticate() async {
     final prefs = await SharedPreferences.getInstance();
-    final id = prefs.getString('id');
+    final myId = prefs.getString('id');
     final validUntil = prefs.getString('valid_until');
 
     final signature = await readFile('signature');
@@ -176,13 +199,111 @@ class _HomePageState extends State<HomePage> {
     final ecdhKeyPair = await ECDHCrypto.genKey();
     final ecdhPubBytes = ECDHCrypto.getPublicBytes(ecdhKeyPair.publicKey);
 
-    final url = Uri.parse("http://192.168.4.1/authenticate");
+    final url = Uri.parse("http://192.168.4.1/handshake");
+
+    print(
+      "id: $myId, validUntil: $validUntil, ecdhPubBytes: ${_bytesToHex(ecdhPubBytes).toUpperCase()}",
+    );
+    print("cNonce: ${_bytesToHex(Uint8List.fromList(cNonce))}");
+    print("signature: $signature");
 
     final response = await http.post(
       url,
       headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({id: id, 'valid_until': validUntil, 'pub': ecdsa_pub, 'signature': signature, 'c_nonce': _bytesToHex(Uint8List.fromList(cNonce)), 'session': _bytesToHex(ecdhPubBytes).toUpperCase()}),
+      body: jsonEncode({
+        'id': myId,
+        'valid_until': validUntil,
+        'pub': ecdsa_pub,
+        'signature': signature,
+        'c_nonce': _bytesToHex(Uint8List.fromList(cNonce)),
+        'session': _bytesToHex(ecdhPubBytes).toUpperCase(),
+      }),
     );
+
+    if (response.statusCode == 200) {
+      final Map<String, dynamic> data = jsonDecode(response.body);
+      final serverId = data['id'];
+      final validUntil = data['valid_until'];
+      final pub = data['pub'];
+      final session_signature = data['session_signature'];
+      final cert_signature = data['cert_signature'];
+      final session = data['session'];
+      final s_nonce = data['s_nonce'];
+
+      print(data);
+
+      final certBytes = ECDSA.certBytes(
+        ascii.encode(serverId),
+        _hexToBytes(pub),
+        ascii.encode(validUntil),
+      );
+      if (ECDSA.verify(
+        certBytes,
+        _hexToBytes((await readFile('ca.pub'))!),
+        _hexToBytes(cert_signature),
+      )) {
+        print("valid server cert");
+      } else {
+        print("invalid server cert");
+        return;
+      }
+
+      final sessionBytes = ECDSA.sessionBytes(
+        Uint8List.fromList(cNonce),
+        ecdhPubBytes,
+        _hexToBytes(session),
+      );
+
+      if (ECDSA.verify(
+        sessionBytes,
+        _hexToBytes(pub),
+        _hexToBytes(session_signature),
+      )) {
+        print("valid server session");
+      } else {
+        print("invalid server session");
+        return;
+      }
+
+      final authURL = Uri.parse("http://192.168.4.1/authenticate");
+
+      final signaturePrivateKey = ECDSA.pemToECPrivateKey(
+        (await readFile('ecdsa.pem'))!,
+      );
+
+      final returnSessionBytes = ECDSA.sessionBytes(
+        _hexToBytes(s_nonce),
+        ecdhPubBytes,
+        _hexToBytes(session),
+      );
+
+      final returnSessionSig = ECDSA.sign(
+        signaturePrivateKey,
+        returnSessionBytes,
+      );
+
+      print("s_nonce: $s_nonce");
+      print("ecdhPubBytes: ${_bytesToHex(ecdhPubBytes).toUpperCase()}");
+      print("ecdsa_pub: $ecdsa_pub");
+      print("session: ${_bytesToHex(_hexToBytes(session)).toUpperCase()}");
+      print("returnSessionSig: ${_bytesToHex(returnSessionSig).toUpperCase()}");
+
+      final response2 = await http.post(
+        authURL,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'id': myId,
+          'signature': _bytesToHex(returnSessionSig).toUpperCase(),
+          'pub': ecdsa_pub,
+          'session': _bytesToHex(ecdhPubBytes).toUpperCase(),
+        }),
+      );
+
+      print("authentication response: ${response2.body}");
+    } else {
+      print('Authentication failed:');
+      return;
+    }
   }
 
   Future<String?> readFile(String filename) async {
@@ -192,6 +313,7 @@ class _HomePageState extends State<HomePage> {
 
       if (await file.exists()) {
         final content = await file.readAsString();
+        print("Read from file: ${file.path}");
         return content;
       } else {
         print('File not found: $filename');
@@ -206,18 +328,18 @@ class _HomePageState extends State<HomePage> {
   Future<void> saveToFile(String filename, String content) async {
     final dir = await getApplicationDocumentsDirectory();
     final file = File('${dir.path}/$filename');
+    print("Saving to file: ${file.path}");
     await file.writeAsString(content);
   }
 
-  Future<void> saveToLocalStorage(String id, String validUntil) async {
+  Future<void> saveToLocalStorage(String id, String value) async {
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('device_id', id);
-    await prefs.setString('valid_until', validUntil);
+    await prefs.setString(id, value);
   }
 
-  
   List<int> _randomBytes(int length) {
     final rnd = Random.secure();
+    print("Generating $length random bytes $rnd");
     return List.generate(length, (_) => rnd.nextInt(256));
   }
 }
@@ -225,8 +347,7 @@ class _HomePageState extends State<HomePage> {
 @override
 Widget build(BuildContext context) {
   return Scaffold(
-    appBar: AppBar(title: const Text('Background Sender')),
-    body: const Center(child: Text('Đang gửi dữ liệu mỗi 5 giây')),
+    appBar: AppBar(title: const Text('Check Attendance Application')),
   );
 }
 

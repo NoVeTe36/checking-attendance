@@ -48,6 +48,22 @@ class ECDSA {
     return result;
   }
 
+static Uint8List certBytes(Uint8List id, Uint8List publicBytes, Uint8List validUntil) {
+      BytesBuilder builder = BytesBuilder();
+      builder.add(id);
+      builder.add(publicBytes);
+      builder.add(validUntil);
+      return builder.toBytes();
+  }
+
+  static Uint8List sessionBytes(Uint8List nonce, Uint8List clientPubBytes, Uint8List serverPubBytes) {
+      BytesBuilder builder = BytesBuilder();
+      builder.add(nonce);
+      builder.add(clientPubBytes);
+      builder.add(serverPubBytes);
+      return builder.toBytes();
+  }
+  
   /// Encrypt using AES-GCM
   /// Returns (nonce, ciphertext, tag) - same as Python implementation
   static Uint8List sign(ECPrivateKey privateKey, Uint8List message) {
